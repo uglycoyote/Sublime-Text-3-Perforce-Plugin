@@ -22,11 +22,65 @@ except ImportError:
 # whenever a view is selected, the variable gets updated
 global_folder = ''
 
+# Splits path like "folder1\folder2\folder3\filename" up into a list ["folder1", "folder2, "folder3", "filename"]
+# http://stackoverflow.com/questions/3167154/how-to-split-a-dos-path-into-its-components-in-python
+def SplitPathIntoList(path):
+    folders=[]
+    while 1:
+        path,folder=os.path.split(path)
+        if folder!="":
+            folders.append(folder)
+        else:
+            if path!="":
+                folders.append(path)
+            break
+    folders.reverse()
+    return folders
+
+
+
+# Takes a full path of a filename and traverses the directory structure to find teh correct capitalization
+#   of all of the parts of the path.   If it fails to find the given file, it will return the same string that is passed in. 
+def FixPathCapitilization(fname):
+    if not os.path.exists(fname):
+        print('No such file' + fname)
+    else:
+        (driveLetter, restOfPath) = os.path.splitdrive(fname)
+        if ( driveLetter == None ):  # some plats might not have drive letters.
+            return fname 
+        fixedPath = driveLetter + "\\"
+        restOfPath = restOfPath.strip('\\')
+        restOfPath = restOfPath.strip('/')
+        splitPath = SplitPathIntoList(restOfPath)
+        for pathPart in splitPath:
+            filesInFolder = os.listdir(fixedPath)
+            correctedPathPartCandidates = [fixed for fixed in filesInFolder if fixed.lower() == pathPart.lower()]
+            if ( len(correctedPathPartCandidates) > 0 ):
+                correctedPathPart = correctedPathPartCandidates[0]
+                fixedPath = os.path.join(fixedPath, correctedPathPart)
+            else:
+                print ("FixPathCapitilization failed to find " + pathPart + " in " + fixedPath)
+                return fname 
+        return fixedPath
+
+# Calls Sublime Plugin API's view.file_name, then corrects the capitalization of the returned path to 
+#   match the capitalization found on disk.
+def GetFileName( view ):
+    if ( view == None ):
+        return None
+    path = view.file_name()
+    if ( path == None ):
+        return None
+    correctPath = FixPathCapitilization(path)
+    # if ( path != correctPath ):
+    #     print ("Corrected " + path + " to " + correctPath)
+    return correctPath
+
 class PerforceP4CONFIGHandler(sublime_plugin.EventListener):  
     def on_activated(self, view):
-        if view.file_name():
+        if GetFileName(view):
             global global_folder
-            global_folder, filename = os.path.split(view.file_name())
+            global_folder, filename = os.path.split(GetFileName(view))
 
 # Executed at startup to store the path of the plugin... necessary to open files relative to the plugin
 perforceplugin_dir = os.getcwd()
@@ -35,14 +89,11 @@ perforceplugin_dir = os.getcwd()
 def ConstructCommand(in_command):
     perforce_settings = sublime.load_settings('Perforce.sublime-settings')
     p4Env = perforce_settings.get('perforce_p4env')
-    p4Path = perforce_settings.get('perforce_p4path')
-    if ( p4Path == None or p4Path == '' ):
-        p4Path = ''
     command = ''
     if(p4Env and p4Env != ''):
-        command = '. {0} && {1}'.format(p4Env, p4Path)
+        command = '. {0} && '.format(p4Env)
     elif(sublime.platform() == "osx"):
-        command = '. ~/.bash_profile && {0}'.format(p4Path)
+        command = '. ~/.bash_profile && '
     # Revert change until threading is fixed
     # command = getPerforceConfigFromPreferences(command)
     command += in_command
@@ -286,10 +337,10 @@ def Checkout(in_filename):
   
 class PerforceAutoCheckout(sublime_plugin.EventListener):  
     def on_modified(self, view):
-        if(not view.file_name()):
+        if(not GetFileName(view)):
             return
 
-        if(IsFileWritable(view.file_name())):
+        if(IsFileWritable(GetFileName(view))):
             return
 
         perforce_settings = sublime.load_settings('Perforce.sublime-settings')
@@ -299,7 +350,7 @@ class PerforceAutoCheckout(sublime_plugin.EventListener):
             return
               
         if(view.is_dirty()):
-            success, message = Checkout(view.file_name())
+            success, message = Checkout(GetFileName(view))
             LogResults(success, message);
 
     def on_pre_save(self, view):
@@ -310,13 +361,13 @@ class PerforceAutoCheckout(sublime_plugin.EventListener):
             return
               
         if(view.is_dirty()):
-            success, message = Checkout(view.file_name())
+            success, message = Checkout(GetFileName(view))
             LogResults(success, message);
 
 class PerforceCheckoutCommand(sublime_plugin.TextCommand):
     def run(self, edit):
-        if(self.view.file_name()):
-            success, message = Checkout(self.view.file_name())
+        if(self.GetFileName(view)):
+            success, message = Checkout(self.GetFileName(view))
             LogResults(success, message)
         else:
             WarnUser("View does not contain a file")
@@ -330,11 +381,11 @@ class PerforceAutoAdd(sublime_plugin.EventListener):
     preSaveIsFileInDepot = 0
     def on_pre_save(self, view):
         # file already exists, no need to add
-        if view.file_name() and os.path.isfile(view.file_name()):
+        if GetFileName(view) and os.path.isfile(GetFileName(view)):
             return
 
         global global_folder
-        global_folder, filename = os.path.split(view.file_name())
+        global_folder, filename = os.path.split(GetFileName(view))
 
         perforce_settings = sublime.load_settings('Perforce.sublime-settings')
 
@@ -345,24 +396,19 @@ class PerforceAutoAdd(sublime_plugin.EventListener):
             WarnUser("Auto Add disabled")
             return
 
-        folder_name, filename = os.path.split(view.file_name())
-
-        if(not IsFolderUnderClientRoot(folder_name)):
-            WarnUser("Adding file outside of clientspec, ignored for auto add")
-            return
-
+        folder_name, filename = os.path.split(GetFileName(view))
         self.preSaveIsFileInDepot = IsFileInDepot(folder_name, filename)
 
     def on_post_save(self, view):
         if(self.preSaveIsFileInDepot == -1):
-            folder_name, filename = os.path.split(view.file_name())
+            folder_name, filename = os.path.split(GetFileName(view))
             success, message = Add(folder_name, filename)
             LogResults(success, message)
 
 class PerforceAddCommand(sublime_plugin.TextCommand):
     def run(self, edit):
-        if(self.view.file_name()):
-            folder_name, filename = os.path.split(self.view.file_name())
+        if(self.GetFileName(view)):
+            folder_name, filename = os.path.split(self.GetFileName(view))
 
             if(IsFileInDepot(folder_name, filename)):
                 success, message = Add(folder_name, filename)
@@ -450,8 +496,8 @@ def Revert(in_folder, in_filename):
 
 class PerforceRevertCommand(sublime_plugin.TextCommand):
     def run_(self, edit_token, args): # revert cannot be called when an Edit object exists, manually handle the run routine
-        if(self.view.file_name()):
-            folder_name, filename = os.path.split(self.view.file_name())
+        if(self.GetFileName(view)):
+            folder_name, filename = os.path.split(self.GetFileName(view))
 
             if(IsFileInDepot(folder_name, filename)):
                 success, message = Revert(folder_name, filename)
@@ -472,8 +518,8 @@ def Diff(in_folder, in_filename):
 
 class PerforceDiffCommand(sublime_plugin.TextCommand):
     def run(self, edit): 
-        if(self.view.file_name()):
-            folder_name, filename = os.path.split(self.view.file_name())
+        if(self.GetFileName(view)):
+            folder_name, filename = os.path.split(self.GetFileName(view))
 
             if(IsFileInDepot(folder_name, filename)):
                 success, message = Diff(folder_name, filename)
@@ -540,8 +586,8 @@ def GraphicalDiffWithDepot(self, in_folder, in_filename):
 
 class PerforceGraphicalDiffWithDepotCommand(sublime_plugin.TextCommand):
     def run(self, edit): 
-        if(self.view.file_name()):
-            folder_name, filename = os.path.split(self.view.file_name())
+        if(self.GetFileName(view)):
+            folder_name, filename = os.path.split(self.GetFileName(view))
 
             if(IsFileInDepot(folder_name, filename)):
                 success, message = GraphicalDiffWithDepot(self, folder_name, filename)
@@ -805,7 +851,7 @@ class ListChangelistsAndMoveFileThread(threading.Thread):
             if(changelist == 'New'): # Special Case
                 self.window.show_input_panel('Changelist Description', '', self.on_description_done, self.on_description_change, self.on_description_cancel)
             else:
-                success, message = MoveFileToChangelist(self.view.file_name(), changelist.lower())
+                success, message = MoveFileToChangelist(self.GetFileName(view), changelist.lower())
                 LogResults(success, message);
 
         sublime.set_timeout(move_file, 10)
@@ -816,7 +862,7 @@ class ListChangelistsAndMoveFileThread(threading.Thread):
             # Extract the changelist name from the message
             changelist = message.split(' ')[1]
             # Move the file
-            success, message = MoveFileToChangelist(self.view.file_name(), changelist)
+            success, message = MoveFileToChangelist(self.GetFileName(view), changelist)
 
         LogResults(success, message)
     
